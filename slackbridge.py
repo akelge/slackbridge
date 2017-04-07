@@ -1,4 +1,3 @@
-# vim: set ts=8 sw=4 sts=4 et ai:
 # Slackbridge bridges Slack.com #channels between companies.
 # Copyright (C) 2015,2016  Walter Doekes, OSSO B.V.
 #
@@ -119,6 +118,7 @@ import re
 import smtplib
 import time
 import traceback
+import simpleyaml as yaml
 
 try:
     from urllib import request
@@ -135,19 +135,29 @@ from multiprocessing import Process, Pipe
 from pprint import pformat
 
 
+with open('config.yaml') as f:
+    basecfg = yaml.load(f)
+config = basecfg.get('slackbridge')
+
 # BASE_PATH needs to be set to the path prefix (location) as configured
 # in the web server.
-BASE_PATH = '/'
+BASE_PATH = config.get('basepath', '/')
 # CONFIG is a dictionary indexed by "Outgoing WebHooks" token.
 # The subdictionaries contain 'iwh_url' for "Incoming WebHooks" post and
 # a dictionary with payload updates ({'channel': '#new_chan'}).
 # TODO: should we index it by "service_id" instead of "(owh)token"?
-CONFIG = {}
+# CONFIG = {}
+
+CONFIG = config.get('slack')
+
 # Lazy initialization of workers?
-LAZY_INITIALIZATION = True  # use, unless you have uwsgi-lazy-apps
+LAZY_INITIALIZATION = config.get('lazy-init', True)  # use, unless you have uwsgi-lazy-apps
 # Notification settings (mail_admins) in case of broken connections.
-MAIL_FROM = 'noreply@slackbridge.example.com'
-MAIL_TO = ('root',)  # a tuple
+MAIL_FROM = config.get('mailfrom')
+if type(config.get('mailto')) is list:
+    MAIL_TO = tuple(config.get('mailto'))
+else:
+    MAIL_TO = tuple([config.get('mailto')])
 
 # Or, you can put the config (and logging defaults) in a separate file.
 try:
@@ -191,7 +201,7 @@ UNSET = '<unset>'
 #     datefmt='%Y-%m-%d %H:%M:%S %Z'))
 #
 log = logging.getLogger('slackbridge')
-# logger.setLevel(logging.DEBUG)
+log.setLevel(config.get('logLevel', 'INFO'))
 # logger.addHandler(handler)
 
 
@@ -206,6 +216,7 @@ def mail_admins(subject, body):
 
 
 class RequestHandler(object):
+
     def __init__(self, config, logger, ipc, base_path):
         self.config = config
         self.logger = logger
@@ -288,6 +299,7 @@ class RequestHandler(object):
 
 
 class ResponseHandler(object):
+
     def __init__(self, config, logger):
         self.config = config
         self.log = logger
@@ -326,7 +338,7 @@ class ResponseHandler(object):
                         i['atchannel'], i['channel'],
                         ', '.join(sorted(i['users'])))
                     for i in sorted(info.values(),
-                                    key=(lambda x: x['channel']))),
+                        key=(lambda x: x['channel']))),
                 'channel': '#' + outgoingwh_values['channel_name']
             }
             # Send.
@@ -563,9 +575,12 @@ class ResponseHandler(object):
     def get_info(self, local_owh_token):
         # Get info about channel linkage and local and remote users.
         local_config = self.config[local_owh_token]
-        local_channel = remote_channel = UNSET
-        local_atchannel = remote_atchannel = UNSET
-        local_users = remote_users = []
+        local_channel = UNSET
+        local_atchannel = UNSET
+        remote_channel = UNSET
+        remote_atchannel = UNSET
+        local_users = []
+        remote_users = []
         local_wa_token = local_config.get('wa_token', '')
 
         remote_owh_token = local_config.get('owh_linked')
@@ -646,11 +661,11 @@ def response_worker(config, logger, ipc):
             else:
                 try:
                     responsehandler.respond(item)
-                except:
+                except Exception:
                     logger.error('For item: %r', item)
                     logger.error(traceback.format_exc())
                     logger.warn('Continuing...')
-    except:
+    except Exception:
         logger.error(traceback.format_exc())
         logger.warn('Aborting...')
 
@@ -721,3 +736,5 @@ if not LAZY_INITIALIZATION:
 if __name__ == '__main__':
     # If you don't use uWSGI, you can use the builtin_httpd.
     builtin_httpd('127.0.0.1', 8001)
+
+#  vim: set ts=8 sw=4 tw=0 ft=python :

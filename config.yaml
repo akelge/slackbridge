@@ -1,0 +1,24 @@
+slackbridge:
+    basepath: /slackbridge/
+    lazy-init: True
+    logLevel: DEBUG
+    mailfrom: noreply@slackbridge.example.com
+    mailto:
+        - root@example.com
+    slack:
+        <team1outWHtoken>:
+            iwh_url: <team2hookURL>
+            iwh_update:
+                channel: '#<team2channel>'
+                _atchannel: <team1name>
+            owh_linked: <team2outWHtoken>
+            wa_token: <team1botname>
+            other_name: <team2name>
+        <team2outWHtoken>:
+            iwh_url: <team1hookURL>
+            iwh_update:
+                channel: '#<team1channel>'
+                _atchannel: <team2name>
+            owh_linked: <team1outWHtoken>
+            wa_token: <team2botname>
+            other_name: <team1name>
