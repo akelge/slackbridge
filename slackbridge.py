@@ -14,100 +14,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
-Slackbridge bridges Slack.com #channels between companies.
-
-  * Does your company use Slack?
-  * Does your customer/subcontractor also use slack?
-
-Then, no more hard times of having to grant each others' workers access
-on both Slack teams: you can now form a union between two of your Slack
-#channels using this bridge.
-
-You'll need to run this as a daemon on a publicly reachable IP:
-
-  * Test it in the foreground from the command line, to get a poor mans
-    builtin http server. You can use the nginx "proxy_pass" directive
-    (without path) to reach it.
-  * Run it as a WSGI application. Has been tested with uWSGI; you can
-    use the nginx "uwsgi_pass" directive to reach it. Multiple workers
-    are allowed, as long as it is single-threaded.
-
-Configuration in Slack:
-
-  * Create at least one "Incoming WebHook"[1] per Slack team; record the
-    URL.
-    (Pro tip: set the other relation's brand logo as default icon!)
-  * Create one "Outgoing WebHook"[2] per Slack #channel you want to
-    join; record the secret "token". Set the webhook POST URL to the URL
-    where this bridge is reachable from the world, and append
-    "/outgoing" to the path.
-
-Configuration of this application:
-
-  * Set the BASE_PATH to "/". If this script does not run in the root of
-    your HTTP server, you need to alter that.
-  * There is a CONFIG dictionary below. You need to configure it as
-    follows:
-
-        CONFIG = {
-            '<outgoing_token_from_team_1>': {
-                # The next two settings are for the TEAM2-side.
-                'iwh_url': '<incoming_webhook_url_from_team_2>',
-                'iwh_update': {'channel': '#<destination_channel_on_team_2>',
-                               '_atchannel': '<team2_name_for_team1>'},
-                # Linked with other, optional.
-                'owh_linked': '<outgoing_token_from_team_2>',
-                # Web Api token, optional, see https://api.slack.com/web.
-                'wa_token': '<token_from_team1_user>',
-                # Optional team 2 name to notify @team2 from team1.
-                'other_name': '<team2_name>',
-            },
-            '<outgoing_token_from_team_2>': {
-                # The next two settings are for the TEAM1-side.
-                'iwh_url': '<incoming_url_from_team_1>',
-                'iwh_update': {'channel': '#<destination_channel_on_team_1>',
-                               '_atchannel': '<team1_name_for_team2>'},
-                # Linked with other, optional.
-                'owh_linked': '<outgoing_token_from_team_1>',
-                # Web Api token, optional, see https://api.slack.com/web.
-                'wa_token': '<token_from_team2_user>',
-            },
-        }
-
-  * You can configure more pairs of bridges (or even one-way bridges) as
-    needed. You can reuse the Incoming WebHook URL if you want to bridge
-    more channels between the same teams.
-
-It works like this:
-
-  * The Slack Outgoing WebHook -- from both teams -- posts messages to
-    the slackbridge.
-  * The bridge posts the message to a subprocess, so the main process
-    can return immediately.
-  * The subprocess translates the values from the Outgoing WebHook to
-    values for the Incoming WebHook:
-    - It overwrites the #channel name (if 'channel' in 'iwh_update' is
-      set).
-    - It adds avatars to the user messages (if 'wa_token' is set).
-    - It replaces @team1 with @channel (if '_atchannel' in 'iwh_update'
-      is set).
-    - It removes/untranslates local @mentions (if 'wa_token' is set).
-  * The translated values get posted to the Incoming WebHook URL.
-
-Supported commands by the bot -- type it in a bridged channel and get
-the response there:
-
-  * `!info` lists the users on both sides of the bridge. Now you know
-    who you can @mention.
-
-
-Enjoy!
-
-
-[1] https://my.slack.com/services/new/incoming-webhook
-[2] https://my.slack.com/services/new/outgoing-webhook
-
 Copyright (C) Walter Doekes, OSSO B.V. 2015,2016.
+Copyright (C) Andrea Mistrali, 2017 - cleanup and added functionality
 License: GPLv3+
 """
 import cgi
@@ -120,6 +28,11 @@ import time
 import traceback
 import simpleyaml as yaml
 
+from email.header import Header
+from email.mime.text import MIMEText
+from multiprocessing import Process, Pipe
+from pprint import pformat
+
 try:
     from urllib import request
 except ImportError:
@@ -129,11 +42,6 @@ try:
 except ImportError:
     import urllib as parse  # python2
 
-from email.header import Header
-from email.mime.text import MIMEText
-from multiprocessing import Process, Pipe
-from pprint import pformat
-
 
 with open('config.yaml') as f:
     basecfg = yaml.load(f)
@@ -142,29 +50,23 @@ config = basecfg.get('slackbridge')
 # BASE_PATH needs to be set to the path prefix (location) as configured
 # in the web server.
 BASE_PATH = config.get('basepath', '/')
+
 # CONFIG is a dictionary indexed by "Outgoing WebHooks" token.
 # The subdictionaries contain 'iwh_url' for "Incoming WebHooks" post and
 # a dictionary with payload updates ({'channel': '#new_chan'}).
 # TODO: should we index it by "service_id" instead of "(owh)token"?
 # CONFIG = {}
-
 CONFIG = config.get('slack')
 
 # Lazy initialization of workers?
 LAZY_INITIALIZATION = config.get('lazy-init', True)  # use, unless you have uwsgi-lazy-apps
+
 # Notification settings (mail_admins) in case of broken connections.
 MAIL_FROM = config.get('mailfrom')
 if type(config.get('mailto')) is list:
     MAIL_TO = tuple(config.get('mailto'))
 else:
     MAIL_TO = tuple([config.get('mailto')])
-
-# Or, you can put the config (and logging defaults) in a separate file.
-try:
-    from slackbridgeconf import (
-        BASE_PATH, CONFIG, LAZY_INITIALIZATION, MAIL_FROM, MAIL_TO)
-except ImportError:
-    pass
 
 # Globals initialized once below.
 REQUEST_HANDLER = None
@@ -178,30 +80,10 @@ WA_CHANNELS_LIST = ('https://slack.com/api/channels.list?token=%(wa_token)s&'
 # Other
 UNSET = '<unset>'
 
-# # Optionally configure a basic logger. You'll probably want to place
-# # this in the slackbridgeconf.
-# class Logger(logging.getLoggerClass()):
-#     class AddPidFilter(logging.Filter):
-#         def filter(self, record):
-#             record.pid = os.getpid()
-#             return True
-#
-#     def __init__(self, *args, **kwargs):
-#         super(Logger, self).__init__(*args, **kwargs)
-#         self.addFilter(Logger.AddPidFilter())
-# logging.setLoggerClass(Logger)
-#
-# log_file = '/srv/http/my.example.com/logs/%s.log' % (
-#     __file__.rsplit('/', 1)[-1].rsplit('.', 1)[0],)
-# handler = logging.handlers.RotatingFileHandler(
-#     log_file, encoding='utf-8', maxBytes=(2 * 1024 * 1024), backupCount=7)
-# handler.setLevel(logging.DEBUG)
-# handler.setFormatter(logging.Formatter(
-#     '[%(asctime)s] %(levelname)s/%(pid)s: %(message)s',
-#     datefmt='%Y-%m-%d %H:%M:%S %Z'))
-#
 log = logging.getLogger('slackbridge')
 log.setLevel(config.get('logLevel', 'INFO'))
+log.info('Log level set to: %s',
+        logging.getLevelName(log.getEffectiveLevel()))
 # logger.addHandler(handler)
 
 
