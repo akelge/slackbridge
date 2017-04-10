@@ -19,6 +19,7 @@ Copyright (C) Andrea Mistrali, 2017 - cleanup and added functionality
 License: GPLv3+
 """
 import cgi
+import sys
 import datetime
 import json
 import logging
@@ -81,10 +82,18 @@ WA_CHANNELS_LIST = ('https://slack.com/api/channels.list?token=%(wa_token)s&'
 UNSET = '<unset>'
 
 log = logging.getLogger('slackbridge')
+logfile = config.get('logfile', None)
+if logfile is None:
+    log.addHandler(logging.StreamHandler(stream=sys.stdout))
+else:
+    log.addHandler(logging.FileHandler(filename=logfile))
+
 log.setLevel(config.get('logLevel', 'INFO'))
 log.info('Log level set to: %s',
         logging.getLevelName(log.getEffectiveLevel()))
-# logger.addHandler(handler)
+
+if logfile is None:
+    log.debug('No logfile defined, logging to stdout')
 
 
 def mail_admins(subject, body):
@@ -169,14 +178,12 @@ class RequestHandler(object):
         return cgi.FieldStorage(fp=environ['wsgi.input'], environ=post_env,
                                 keep_blank_values=True)
 
-    if hasattr(str, 'decode'):  # python2, decode data to unicode
-        @staticmethod
-        def get_fields(payload):
+    @staticmethod
+    def get_fields(payload):
+        if hasattr(str, 'decode'):  # python2, decode data to unicode
             return dict((i, payload.getfirst(i).decode('utf-8'))
                         for i in payload.keys())
-    else:  # python3, already unicode
-        @staticmethod
-        def get_fields(payload):
+        else:  # python3, already unicode
             return dict((i, payload.getfirst(i)) for i in payload.keys())
 
 
@@ -523,9 +530,9 @@ class ResponseHandler(object):
                                'atchannel': remote_atchannel},
         }
 
-    # def test(self, owh_token):
-    #     x = self.get_info(owh_token)
-    #     self.log.debug('TEST: %r', x)
+    def test(self, owh_token):
+        x = self.get_info(owh_token)
+        self.log.debug('TEST: %r', x)
 
 
 def response_worker(config, logger, ipc):
@@ -561,7 +568,7 @@ def application(environ, start_response):
         # first request.
         init_globals()
 
-    # log.debug('Got request:\n%r', environ)
+    log.debug('Got request:\n%r', pformat(environ))
     return REQUEST_HANDLER.request(environ, start_response)
 
 

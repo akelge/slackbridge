@@ -2,6 +2,7 @@ slackbridge:
     basepath: /slackbridge/
     lazy-init: True
     logLevel: DEBUG
+    # logfile: slackbridge.log
     mailfrom: noreply@slackbridge.example.com
     mailto:
         - root@example.com
